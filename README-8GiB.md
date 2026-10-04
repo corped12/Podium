@@ -1,3 +1,5 @@
+# русский
+
 # Podium 0.1.0 — фиксированный диск 8 ГиБ
 
 Основа: тег [Leviidev/Podium 0.1.0](https://github.com/Leviidev/Podium/releases/tag/0.1.0), commit `904ffe70378a210cc7d57b2b651677c57617f1b7`.
@@ -75,6 +77,40 @@ python3 StorageBridge/verify_shims.py
 Можно добавить `--kernel /path/to/decompressed/kernel.macho`, чтобы проверить SHA-256 и соответствие адресов смещениям Mach-O. Эти тесты проверяют ABI переходников на подставленных XNU-функциях и **не проверяют реальную загрузку iOS или Swift-реализацию диска**. Swift-реализация проверена отдельными XCTest в успешной облачной сборке. Отдельный тест `RealDiskBootTests` проверил загрузку настоящей iOS до экрана блокировки на новом диске 8 ГиБ. Для его повторения запусти workflow `Diagnose real 8 GiB guest boot`: он временно скачивает оригинальную IPSW Apple, выполняет загрузку и сохраняет результат XCTest без публикации прошивки. Проверка на физическом устройстве остаётся необходимой.
 
 
-## Обновление первой сборки с циклом Kernel
+# English
+
+# Podium 0.1.0 — 8 GiB fixed-size disk
+
+Base: [Leviidev/Podium 0.1.0](https://github.com/Leviidev/Podium/releases/tag/0.1.0) tag, commit `904ffe70378a210cc7d57b2b651677c57617f1b7`.
+
+## What has been prepared
+
+A new system filesystem and a new/wiped Virtual iPod are created with a capacity of **8,589,934,592 bytes (8 GiB)**. This is the total volume capacity; iOS and metadata occupy a portion of it. There is no option to select the size. The HFS+ image is sparse: the free space is not zero-filled and does not immediately require eight gigabytes of physical space on APFS. However, filling the guest disk still requires corresponding free space on the actual device.
+
+The patched IPA was built on a cloud-based Mac via GitHub Actions: [build and tests](https://github.com/cat-yura-game/Podium/actions/runs/37121776354), source code commit `7c30a58`. 546 XCTests passed, two were skipped, and there were zero errors. In a separate check using a real iPod4,1 / iOS 6.1.6 IPSW, the new 8 GiB disk booted to the lock screen: [boot check](https://github.com/cat-yura-game/Podium/actions/runs/37121774793). The check was performed on Apple Silicon in the iOS Simulator with JIT enabled. The patched version has not yet been tested on a physical device. The IPA is unsigned; it must be signed before installation. Fixed a re-loading issue at the Kernel stage discovered in the first build. Direct reads from `/dev/md0` now pass through the guest's `uiomove64` and a dedicated buffer page; user-process addresses are no longer erroneously treated as kernel addresses. User image preparation is performed outside the application's main thread. In the event of an early boot failure, the application saves a log and halts instead of restarting indefinitely.
+
+## Implementation Details
+
+- `RootFilesystemPreparer` passes a fixed 8 GiB capacity to the existing HFS+ writer; the recipe version has been bumped from 13 to 14. The writer already utilizes `truncate` and writes to allocated sectors. The free-block calculation logic now includes a safety check before subtracting the bitmap size.
+- `FileBackedStorage` implements `VirtualStorageDevice`, featuring `pread`/`pwrite` with 64-bit offsets, bounds checking, `EINTR` retries, and host disk error handling. The entire image is never mapped into ARM RAM; RAM usage remains at 1 GiB.
+- `GuestDiskBridge` replaces `mdevstrategy` and the raw disk path with small Thumb-mode shims to ensure compatibility with the **exact original iPod4,1 / 10B500 kernelcache**. XNU continues to execute `buf_map`, `buf_unmap`, and `buf_biodone`; raw I/O utilizes the standard `uiomove64` and a `kalloc` page allocated per call. The host handles only the data transfer between the image and kernel memory. Block I/O operations account for `kernel_pmap` tables, including deferred mappings; writes to RAM update the compiled code cache. This eliminates the 32-bit truncation of offsets and sizes found in the standard [memdev.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-2050.48.11/bsd/dev/memdev.c).
+- A single-page RAMDisk remains in the device tree to register `md0`, while the actual capacity is reported to the guest via patched 32/64-bit capacity ioctls. Cache-sync ioctls and shutdown operations trigger `fsync`. If the final flush fails, the operation can be retried, just as in the original Podium.
+- The SHA-256 hash of the entire unpacked kernel is verified **before** modification: `415717e559c48fcf8a2aedec05d3ed2efa6312b11de942acd1c56629b72192ef`. If the hash does not match, the large disk loading process halts with a clear error message. These adaptations apply only to `md0`; other memory devices are not supported in this workflow.
+- IPA/DEB processing and file additions preserve the original capacity during transactional rebuilding; the free space reserve is maintained. Temporary images are also created as sparse files. Copying utilizes APFS cloning, while the fallback path skips zero blocks. When launching a non-persistent disk temporarily, writes are directed to a separate copy.
+
+The original limitations of offline installers remain: support is limited to compatible IPAs and simple DEBs; features such as installing DEBs with scripts or unsupported packaging formats, signing, and full application registration within the guest have not been added. Shutdown preserves writes already committed by the guest to the disk; this does not guarantee the preservation of guest buffers that have not yet been flushed in the event of an abrupt power-off. To ensure compatibility with the modern Swift compiler, a complex `tbl/tbx` encoding expression in `A64Assembler.swift` has been broken down, while preserving the encoding result. The manual test for loading a local IPSW has been excluded from the automated test target in `project.yml`, as it requires a firmware file not present in the repository.
+
+## Build and Installation
+
+On a Mac with Xcode and the iOS SDK installed:
+
+```bash
+brew install xcodegen
+bash build-8gib-ipa.sh
+```
+
+The script generates `Podium.xcodeproj` from the source `project.yml`, builds the Release version for the device, and creates `Podium-0.1.0-8GiB-unsigned.ipa`. This is an **unsigned** IPA. Sign and install it using your preferred sideloading tool. Alternatively, open the generated project in Xcode, select your Team under "Signing & Capabilities," and install it on a connected device. The initial deployment target is iOS 17.0.
+
+
 
 Установи исправленную IPA поверх предыдущей с тем же идентификатором приложения и способом подписи, чтобы сохранить данные Podium. После установки снова включи JIT и запусти виртуальный iPod. Для уже созданного диска 8 ГиБ повторное стирание не требуется: исправление находится в эмуляторе. Сохрани резервную копию перед обновлением; удаление приложения может удалить импортированную прошивку и диск.
